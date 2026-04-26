@@ -11,6 +11,7 @@ use pingora::upstreams::peer::HttpPeer;
 use std::env;
 use std::net::SocketAddr;
 
+use bytes::Buf;
 use futures_util::StreamExt;
 use http::Response;
 use reqwest::Client;
@@ -149,10 +150,28 @@ async fn start_quic_engine(cert_path: String, key_path: String, listen_port: u16
                                 let target_url =
                                     format!("http://127.0.0.1:{}{}", target_port, path_and_query);
                                 let method = req.method().clone();
+                                let headers = req.headers().clone();
 
-                                // 에러 발생 시 앱이 죽지 않도록 if let으로 안전하게 감쌈
+                                // 2. 클라이언트로부터 바디(JSON) 읽기
+                                let mut request_body = Vec::new();
+                                while let Ok(Some(mut chunk)) = stream.recv_data().await {
+                                    // Buf 트레이트가 임포트되어 있어야 아래와 같이 남은 바이트를 다 가져올 수 있습니다.
+                                    let mut bytes = vec![0u8; chunk.remaining()];
+                                    chunk.copy_to_slice(&mut bytes);
+                                    request_body.extend_from_slice(&bytes);
+                                }
 
-                                if let Ok(res) = client.request(method, &target_url).send().await {
+                                // 3. 백엔드로 보낼 요청 구성 (바디와 헤더 포함)
+                                let mut proxy_request_builder =
+                                    client.request(method, &target_url).body(request_body);
+
+                                for (key, value) in headers.iter() {
+                                    proxy_request_builder =
+                                        proxy_request_builder.header(key, value);
+                                }
+
+                                // 4. 전송
+                                if let Ok(res) = proxy_request_builder.send().await {
                                     let mut response_builder =
                                         Response::builder().status(res.status());
 
@@ -166,11 +185,9 @@ async fn start_quic_engine(cert_path: String, key_path: String, listen_port: u16
                                         .is_ok()
                                     {
                                         let mut byte_stream = res.bytes_stream();
-
                                         while let Some(Ok(chunk)) = byte_stream.next().await {
                                             let _ = stream.send_data(chunk).await;
                                         }
-
                                         let _ = stream.finish().await;
                                     }
                                 }
