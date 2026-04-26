@@ -1,2 +1,6 @@
 /target
+cert_env
+
+# Env
 .env
+db/*
