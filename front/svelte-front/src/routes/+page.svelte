@@ -130,7 +130,12 @@
       const response = await axios.post(
         `${API_BASE}/api/files/download-zip`, 
         Array.from(selectedIds), 
-        { responseType: 'blob' }
+        { 
+            responseType: 'blob',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        }
       );
 
       const blob = new Blob([response.data], { type: 'application/zip' });

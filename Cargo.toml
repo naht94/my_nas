@@ -33,10 +33,11 @@ async_zip = { version = "0.0.18", features = ["full", "zstd"] }
 pingora = {version = "0.8.0", features = ["proxy", "openssl"]}
 
 # QUIC
+
 quinn = "0.11"
-h3 = "0.0.6"
-h3-quinn = "0.0.7"
-http = "1.1" # h3와 호환되는 버전
-reqwest = { version = "0.12", features = ["stream"] } # 내부망(127.0.0.1)으로 요청을 쏴줄 클라이언트
+reqwest = { version = "0.12", features = ["stream"] }
 rustls = "0.23"
 rustls-pemfile = "2.1"
+h3 = { git = "https://github.com/hyperium/h3" }
+h3-quinn = { git = "https://github.com/hyperium/h3" }
+http = "1.4.0"

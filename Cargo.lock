@@ -1303,9 +1303,8 @@ dependencies = [
 
 [[package]]
 name = "h3"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e7675a0963b47a6d12fe44c279918b4ffb19baee838ac37f48d2722ad5bc6ab"
+version = "0.0.8"
+source = "git+https://github.com/hyperium/h3#704b37a2e82cf4c8de379ec779dbc2a23bfcb9a1"
 dependencies = [
  "bytes",
  "fastrand",
@@ -1317,15 +1316,13 @@ dependencies = [
 
 [[package]]
 name = "h3-quinn"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17c799f413fceeea505236c4d8132f084ff4b55a652288d91439ee93dc24d855"
+version = "0.0.10"
+source = "git+https://github.com/hyperium/h3#704b37a2e82cf4c8de379ec779dbc2a23bfcb9a1"
 dependencies = [
  "bytes",
- "futures",
+ "futures-util",
  "h3",
  "quinn",
- "tokio",
  "tokio-util",
 ]
 
@@ -1448,12 +1445,11 @@ checksum = "e9025058dae765dee5070ec375f591e2ba14638c63feff74f13805a72e523163"
 
 [[package]]
 name = "http"
-version = "1.3.1"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4a85d31aea989eead29a3aaf9e1115a180df8282431156e533de47660892565"
+checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
 dependencies = [
  "bytes",
- "fnv",
  "itoa",
 ]
 
