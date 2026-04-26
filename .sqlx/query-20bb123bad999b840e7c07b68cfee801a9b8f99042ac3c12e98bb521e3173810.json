@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1 FROM files\n                WHERE name = ? AND folder_id IS ? AND is_dir = 1\n            ) as exists_flag\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists_flag",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "20bb123bad999b840e7c07b68cfee801a9b8f99042ac3c12e98bb521e3173810"
+}

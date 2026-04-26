@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        SELECT \n            id as \"id!\", folder_id, name as \"name!\", size as \"size!\", \n            file_type, checksum, version as \"version!\", is_deleted as \"is_deleted!\", \n            created_at, updated_at\n        FROM files \n        WHERE folder_id IS ? AND is_deleted = 0\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "folder_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "size!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "file_type",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "checksum",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "version!",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_deleted!",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fb9af9df4aa7da4245d6d942632e2bc2c88f0618386f777d7d85fd734f6e303f"
+}
