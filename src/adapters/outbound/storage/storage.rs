@@ -22,17 +22,17 @@ impl DiskStorage {
 
 #[async_trait]
 impl StoragePort for DiskStorage {
-    async fn save_file(&self, id: &str, data: &[u8]) -> StorageResult<()> {
-        let path = self.get_physical_path(id);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        fs::write(&path, data).await?;
-        debug!("File saved successfully at: {:?}", path);
-        Ok(())
-    }
+    // async fn save_file(&self, id: &str, data: &[u8]) -> StorageResult<()> {
+    //     let path = self.get_physical_path(id);
+    //
+    //     if let Some(parent) = path.parent() {
+    //         fs::create_dir_all(parent).await?;
+    //     }
+    //
+    //     fs::write(&path, data).await?;
+    //     debug!("File saved successfully at: {:?}", path);
+    //     Ok(())
+    // }
     async fn save_file_stream(
         &self,
         id: &str,

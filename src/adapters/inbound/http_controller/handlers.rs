@@ -32,7 +32,11 @@ pub struct EmptyTrashResponse {
     pub message: String,
     pub success: bool,
 }
-
+#[derive(Deserialize)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+}
 pub type AppResult<T> = Result<T, AppError>;
 
 pub async fn create_folder_handler(
@@ -157,4 +161,24 @@ pub async fn empty_trash_handler(
 }
 pub async fn hello_handler() -> Json<Value> {
     Json(FirstSt::hello())
+}
+
+pub async fn register_user_handler(
+    State(service): State<Arc<NasService>>,
+    Json(payload): Json<RegisterRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match service
+        .register_new_user(&payload.username, &payload.password)
+        .await
+    {
+        Ok(user_id) => Ok(Json(json!({
+            "message": "회원가입이 완료되었습니다.",
+            "user_id": user_id
+        }))),
+        Err(e) => {
+            // 실패 시 로깅 후 500 에러 반환 (추후 중복 가입 등에 따라 400 등 세분화 가능)
+            tracing::error!("회원가입 실패: {:?}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

@@ -11,7 +11,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use adapters::outbound::repository::sqllite::SqliteRepository;
+use adapters::outbound::repository::sqlite::SqliteFilesRepository;
+use adapters::outbound::repository::sqlite::SqliteUsersRepository;
 use adapters::outbound::storage::storage::DiskStorage;
 use application::service::NasService;
 use infrastructure::server::build_server;
@@ -19,7 +20,7 @@ use infrastructure::server::build_server;
 use crate::{
     adapters::inbound::webDav::webdav::NasWebDavAdapter,
     application::webdav_vfs_service::WebDavVfsService,
-    domain::ports::{RepositoryPort, StoragePort},
+    domain::ports::{FilesRepositoryPort, StoragePort},
 };
 
 #[tokio::main]
@@ -33,7 +34,7 @@ async fn main() {
     let db_url =
         env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env file or environment");
 
-    let starage_path = env::var("STORAGE_PATH").expect("STORAGE_PATH might be find by user");
+    let storage_path = env::var("STORAGE_PATH").expect("STORAGE_PATH might be find by user");
 
     let pool = SqlitePoolOptions::new()
         .connect(&db_url)
@@ -41,17 +42,22 @@ async fn main() {
         .expect("Failed to connect to SQLite");
 
     // Storage 구현체 생성
-    let base_path = PathBuf::from(&starage_path);
+    let base_path = PathBuf::from(&storage_path);
     std::fs::create_dir_all(&base_path).expect("Failed to create base storage directory");
     let storage = Arc::new(DiskStorage::new(base_path.to_str().unwrap()));
 
     // Repository 구현체 생성
-    let repository = Arc::new(SqliteRepository::new(pool));
+    let file_repo = Arc::new(SqliteFilesRepository::new(pool.clone()));
+    let user_repo = Arc::new(SqliteUsersRepository::new(pool.clone()));
 
     // 서비스 조립
-    let service = Arc::new(NasService::new(storage.clone(), repository.clone()));
+    let service = Arc::new(NasService::new(
+        storage.clone(),
+        file_repo.clone(),
+        user_repo.clone(),
+    ));
 
-    let repo_port: Arc<dyn RepositoryPort> = repository.clone();
+    let repo_port: Arc<dyn FilesRepositoryPort> = file_repo.clone();
     let storage_port: Arc<dyn StoragePort> = storage.clone();
 
     let vfs_service = Arc::new(WebDavVfsService::new(service.clone(), repo_port.clone()));

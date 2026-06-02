@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::domain::errors::{NasError, RepositoryResult, StorageError, StorageResult};
+use crate::domain::errors::{NasError, RepositoryResult, StorageResult};
 use crate::domain::models::{FolderMetadata, Greeting, ListItem, ObjectMetadata};
 use async_trait::async_trait;
 use axum::body::BodyDataStream;
@@ -9,7 +9,6 @@ use axum::body::BodyDataStream;
 // 나중에 HDD가 아니라 AWS S3나 메모리로 바뀌어도 이 인터페이스만 지키면 됩니다.
 #[async_trait]
 pub trait StoragePort: Send + Sync {
-    async fn save_file(&self, id: &str, data: &[u8]) -> StorageResult<()>;
     async fn save_file_stream(
         &self,
         id: &str,
@@ -26,7 +25,7 @@ pub trait StoragePort: Send + Sync {
 // RepositoryPort: 메타데이터를 관리하는 "장부"의 인터페이스
 // 나중에 SQLite가 아니라 PostgreSQL이나 Redis로 바뀌어도 상관없습니다.
 #[async_trait]
-pub trait RepositoryPort: Send + Sync {
+pub trait FilesRepositoryPort: Send + Sync {
     // --- 파일(File) 관련 ---
     async fn save_metadata(&self, meta: ObjectMetadata) -> RepositoryResult<()>;
     async fn exists_folder_id_by_id(&self, id: &str) -> Result<bool, NasError>;
@@ -86,6 +85,19 @@ pub trait RepositoryPort: Send + Sync {
     ) -> RepositoryResult<Option<FolderMetadata>>;
 }
 pub struct GreetingService;
+
+#[async_trait]
+pub trait UsersRepositoryPort: Send + Sync {
+    async fn count_crew_members(&self, crew_id: &str) -> RepositoryResult<i64>;
+    async fn create_user(&self, username: &str, password_hash: &str) -> RepositoryResult<i64>;
+    async fn add_crew_member(
+        &self,
+        user_id: i64,
+        crew_id: &str,
+        role: u8,
+        status: u8,
+    ) -> RepositoryResult<()>;
+}
 
 impl GreetingService {
     pub fn say_hello() -> Greeting {

@@ -1,6 +1,6 @@
 use crate::application::service::NasService;
 use crate::domain::models::{FolderMetadata, ObjectMetadata};
-use crate::domain::ports::RepositoryPort;
+use crate::domain::ports::FilesRepositoryPort;
 use std::sync::Arc;
 use urlencoding::decode;
 
@@ -14,11 +14,11 @@ pub enum VfsNode {
 pub struct WebDavVfsService {
     // 💡 NasService와 Repo를 모두 가져와서 일체화합니다.
     pub nas_service: Arc<NasService>,
-    pub repo: Arc<dyn RepositoryPort>,
+    pub repo: Arc<dyn FilesRepositoryPort>,
 }
 
 impl WebDavVfsService {
-    pub fn new(nas_service: Arc<NasService>, repo: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(nas_service: Arc<NasService>, repo: Arc<dyn FilesRepositoryPort>) -> Self {
         Self { nas_service, repo }
     }
 

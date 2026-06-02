@@ -1,22 +1,22 @@
 use crate::domain::errors::NasError;
 use crate::domain::models::FolderMetadata;
-use crate::domain::ports::RepositoryPort;
+use crate::domain::ports::FilesRepositoryPort;
 use crate::domain::{errors::RepositoryResult, models::ObjectMetadata};
 use async_trait::async_trait;
 use sqlx::{Pool, Sqlite};
 
-pub struct SqliteRepository {
+pub struct SqliteFilesRepository {
     pool: Pool<Sqlite>,
 }
 
-impl SqliteRepository {
+impl SqliteFilesRepository {
     pub fn new(pool: Pool<Sqlite>) -> Self {
         Self { pool }
     }
 }
 
 #[async_trait]
-impl RepositoryPort for SqliteRepository {
+impl FilesRepositoryPort for SqliteFilesRepository {
     async fn save_metadata(&self, meta: ObjectMetadata) -> RepositoryResult<()> {
         let size_i64 = meta.size as i64;
         sqlx::query!(

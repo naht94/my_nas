@@ -1,6 +1,8 @@
 use crate::domain::errors::NasError;
-use crate::domain::models::{FolderMetadata, ListItem, ObjectMetadata};
-use crate::domain::ports::{GreetingService, RepositoryPort, StoragePort};
+use crate::domain::models::{FolderMetadata, ListItem, ObjectMetadata, Role, Status};
+use crate::domain::ports::{
+    FilesRepositoryPort, GreetingService, StoragePort, UsersRepositoryPort,
+};
 use async_zip::tokio::write::ZipFileWriter;
 use async_zip::{Compression, ZipEntryBuilder};
 use axum::body::BodyDataStream;
@@ -12,13 +14,13 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, duplex};
-use tokio_util::compat::FuturesAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
 // 서비스는 구체적인 구현체(DiskStorage, SqliteRepo)를 모릅니다.
 // 오직 Trait(Port)만 알고 있습니다. (의존성 역전)
 pub struct NasService {
     pub storage: Arc<dyn StoragePort>,
-    pub repository: Arc<dyn RepositoryPort>,
+    pub repository: Arc<dyn FilesRepositoryPort>,
+    pub crew_repository: Arc<dyn UsersRepositoryPort>,
 }
 
 impl fmt::Debug for NasService {
@@ -36,10 +38,15 @@ impl FirstSt {
 }
 
 impl NasService {
-    pub fn new(storage: Arc<dyn StoragePort>, repository: Arc<dyn RepositoryPort>) -> Self {
+    pub fn new(
+        storage: Arc<dyn StoragePort>,
+        repository: Arc<dyn FilesRepositoryPort>,
+        crew_repository: Arc<dyn UsersRepositoryPort>,
+    ) -> Self {
         Self {
             storage,
             repository,
+            crew_repository,
         }
     }
     pub fn get_storage_usage(&self) -> (u64, u64) {
@@ -285,5 +292,50 @@ impl NasService {
     pub async fn list_files(&self, parent_id: Option<String>) -> Result<Vec<ListItem>, NasError> {
         let items = self.repository.list_items(parent_id.as_deref()).await?;
         Ok(items)
+    }
+
+    pub async fn register_new_user(&self, username: &str, password: &str) -> Result<i64, NasError> {
+        let new_user_id = self
+            .crew_repository
+            .create_user(username, password)
+            .await
+            .map_err(|e| NasError::Internal(e.to_string()))?;
+
+        self.join_or_create_crew_membership(new_user_id, "global-root-uuid")
+            .await?;
+
+        Ok(new_user_id)
+    }
+
+    pub async fn join_or_create_crew_membership(
+        &self,
+        user_id: i64,
+        crew_id: &str,
+    ) -> Result<(), NasError> {
+        let member_count = self
+            .crew_repository
+            .count_crew_members(crew_id)
+            .await
+            .map_err(|e| NasError::Internal(e.to_string()))?;
+
+        let assigned_role = if member_count == 0 {
+            Role::Owner as u8
+        } else {
+            Role::Member as u8
+        };
+
+        let assigned_status =
+            if assigned_role == (Role::Owner as u8) || crew_id == "global-root-uuid" {
+                Status::Active as u8
+            } else {
+                Status::Pending as u8
+            };
+
+        self.crew_repository
+            .add_crew_member(user_id, crew_id, assigned_role, assigned_status)
+            .await
+            .map_err(|e| NasError::Internal(e.to_string()))?;
+
+        Ok(())
     }
 }
