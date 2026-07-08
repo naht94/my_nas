@@ -2,11 +2,12 @@ use crate::application::service::NasService;
 use crate::application::webdav_vfs_service::{VfsNode, WebDavVfsService};
 use crate::domain::models::ObjectMetadata;
 use crate::domain::ports::StoragePort;
+use crate::infrastructure::webdav_auth::WebDavCredentials;
 use chrono::{DateTime, Utc};
 use dav_server::davpath::DavPath;
 use dav_server::fs::{
-    DavDirEntry, DavFile, DavFileSystem, DavMetaData, FsError, FsResult, FsStream, OpenOptions,
-    ReadDirMeta,
+    DavDirEntry, DavFile, DavMetaData, FsError, FsResult, FsStream, GuardedFileSystem,
+    OpenOptions, ReadDirMeta,
 };
 use futures_util::future::BoxFuture;
 use futures_util::stream::StreamExt; // 💡 비동기 스트림 처리를 위해 추가됨
@@ -24,67 +25,70 @@ pub struct NasWebDavAdapter {
     pub storage_port: Arc<dyn StoragePort>,
 }
 
-impl DavFileSystem for NasWebDavAdapter {
+impl GuardedFileSystem<WebDavCredentials> for NasWebDavAdapter {
     fn get_quota<'until_done>(
         &'until_done self,
+        _credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<(u64, Option<u64>)>> {
         Box::pin(async move {
             let (total, available) = self.vfs_service.nas_service.get_storage_usage();
             let used = total.saturating_sub(available);
             tracing::info!(
-                "📊 [WebDAV Quota] Used: {} bytes, available: {} bytes",
+                "📊 [WebDAV Quota] Used: {} bytes, total: {} bytes",
                 used,
-                available
+                total
             );
-            Ok((used, Some(available)))
+            // dav-server는 (used, total)을 기대한다. available을 넘기면 클라이언트가 전체 용량을 잘못 표시한다.
+            Ok((used, Some(total)))
         })
     }
     fn read_dir<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
         _meta: ReadDirMeta,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<FsStream<Box<dyn DavDirEntry>>>> {
         Box::pin(async move {
             let path_str = path.as_url_string();
+            let user_id = credentials.user_id;
 
-            let folder_id = if path_str == "/" || path_str.is_empty() {
-                None
-            } else {
-                match self.vfs_service.resolve_path(&path_str).await {
-                    Ok(Some(VfsNode::Folder(f))) => Some(f.id),
-                    Ok(Some(VfsNode::File(_))) => return Err(FsError::Forbidden),
-                    Ok(None) => return Err(FsError::NotFound),
-                    Err(_) => return Err(FsError::GeneralFailure),
-                }
-            };
+            if path_str == "/" || path_str.is_empty() {
+                return Err(FsError::NotFound);
+            }
 
-            match self.vfs_service.list_directory(folder_id.as_deref()).await {
+            match self.vfs_service.list_directory(&path_str, user_id).await {
                 Ok(nodes) => {
-                    // 💡 핵심: FsStream은 내부적으로 아이템이 Result이길 기대하므로,
-                    // 배열의 타입을 Result<..., FsError>로 선언합니다.
+                    tracing::info!(
+                        "📂 [WebDAV read_dir] path='{}' entries={}",
+                        path_str,
+                        nodes.len()
+                    );
                     let mut entries: Vec<Result<Box<dyn DavDirEntry>, FsError>> = Vec::new();
 
                     for node in nodes {
-                        // 💡 항목을 Ok()로 예쁘게 포장해서 넣습니다!
                         entries.push(Ok(
                             Box::new(NasWebDavDirEntry { node }) as Box<dyn DavDirEntry>
                         ));
                     }
 
-                    // 배열을 스트림으로 변환해서 반환
                     let stream = futures_util::stream::iter(entries).boxed();
                     Ok(stream)
                 }
-                Err(_) => Err(FsError::GeneralFailure),
+                Err(e) => {
+                    tracing::error!("❌ [WebDAV read_dir] path='{}' error: {}", path_str, e);
+                    Err(FsError::GeneralFailure)
+                }
             }
         })
     }
     fn metadata<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<Box<dyn DavMetaData>>> {
         Box::pin(async move {
             let normal_path = path.as_url_string();
+            let user_id = credentials.user_id;
             let raw_url = path.as_url_string();
 
             tracing::info!("--- [Metadata 요청 시작] ---");
@@ -92,10 +96,10 @@ impl DavFileSystem for NasWebDavAdapter {
             tracing::info!("📂 라이브러리 해석 경로 (Path): '{}'", normal_path);
 
             if normal_path == "/" || normal_path.is_empty() {
-                return Ok(Box::new(NasWebDavMetaData::Root) as Box<dyn DavMetaData>);
+                return Err(FsError::NotFound);
             }
 
-            match self.vfs_service.resolve_path(&normal_path).await {
+            match self.vfs_service.resolve_path(&normal_path, user_id).await {
                 Ok(Some(node)) => {
                     // 🔍 여기서 로그를 찍어봅니다.
                     match &node {
@@ -111,7 +115,17 @@ impl DavFileSystem for NasWebDavAdapter {
                             tracing::info!("📁 [Metadata] 폴더 발견: 이름={}", f.name);
                         }
                     }
-                    Ok(Box::new(NasWebDavMetaData::Node(node)) as Box<dyn DavMetaData>)
+                    let meta = if is_webdav_mount_root(&normal_path) {
+                        let (total, available) =
+                            self.vfs_service.nas_service.get_storage_usage();
+                        NasWebDavMetaData::MountRoot {
+                            node,
+                            disk_used: total.saturating_sub(available),
+                        }
+                    } else {
+                        NasWebDavMetaData::Node(node)
+                    };
+                    Ok(Box::new(meta) as Box<dyn DavMetaData>)
                 }
                 Ok(None) => {
                     tracing::warn!("❓ [Metadata] 경로를 찾을 수 없음: {}", normal_path);
@@ -128,17 +142,19 @@ impl DavFileSystem for NasWebDavAdapter {
     fn open<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
-        options: OpenOptions, // 💡 전달받은 옵션을 활용합니다.
+        options: OpenOptions,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<Box<dyn DavFile>>> {
         Box::pin(async move {
             let path_str = path.as_url_string();
+            let user_id = credentials.user_id;
             tracing::info!(
                 "🚀 [WebDAV] Open 요청 발생! 경로: '{}', 쓰기옵션: {}",
                 path_str,
                 options.write
             );
 
-            match self.vfs_service.resolve_path(&path_str).await {
+            match self.vfs_service.resolve_path(&path_str, user_id).await {
                 // ✅ [Case 1] 기존 파일이 존재하는 경우 (읽기 또는 덮어쓰기)
                 Ok(Some(VfsNode::File(file_meta))) => {
                     // 🔥 핵심: 클라이언트가 데이터를 '쓰려고' 파일을 열었는지 확인!
@@ -169,14 +185,12 @@ impl DavFileSystem for NasWebDavAdapter {
                 Ok(None) if options.create => {
                     tracing::info!("🆕 [WebDAV] 새 파일 생성 요청: {}", path_str);
 
-                    // VFS 서비스를 통해 업로드 정보 준비
                     let (new_id, parent_id, final_name) = self
                         .vfs_service
-                        .prepare_file_for_put(&path_str)
+                        .prepare_file_for_put(&path_str, user_id)
                         .await
                         .map_err(|_| FsError::GeneralFailure)?;
 
-                    // 물리적 파일 생성 (쓰기 모드)
                     let tokio_file = self
                         .vfs_service
                         .nas_service
@@ -185,14 +199,39 @@ impl DavFileSystem for NasWebDavAdapter {
                         .await
                         .map_err(|_| FsError::GeneralFailure)?;
 
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let initial_meta = ObjectMetadata {
+                        id: new_id.clone(),
+                        folder_id: parent_id.clone(),
+                        name: final_name.clone(),
+                        size: 0,
+                        file_type: Some(
+                            mime_guess::from_path(&final_name)
+                                .first_or_octet_stream()
+                                .to_string(),
+                        ),
+                        is_deleted: false,
+                        created_at: now.clone(),
+                        updated_at: now,
+                        checksum: None,
+                        version: 1,
+                    };
+
+                    // Windows는 PUT 완료 전에도 PROPFIND로 목록을 갱신한다.
+                    // DB에 먼저 등록해 두어야 새로고침 후에도 항목이 유지된다.
+                    self.vfs_service
+                        .nas_service
+                        .repository
+                        .save_metadata(initial_meta.clone())
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("❌ WebDAV 초기 메타데이터 저장 실패: {:?}", e);
+                            FsError::GeneralFailure
+                        })?;
+
                     Ok(Box::new(NasWebDavFile {
                         file: tokio_file,
-                        meta: ObjectMetadata {
-                            id: new_id,
-                            folder_id: parent_id,
-                            name: final_name,
-                            ..Default::default() // 나머지는 기본값으로
-                        },
+                        meta: initial_meta,
                         nas_service: self.vfs_service.nas_service.clone(),
                     }) as Box<dyn DavFile>)
                 }
@@ -206,13 +245,14 @@ impl DavFileSystem for NasWebDavAdapter {
     fn create_dir<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<()>> {
         Box::pin(async move {
             let path_str = path.as_url_string();
+            let user_id = credentials.user_id;
 
-            // 💡 어댑터는 VFS 서비스에게 "이 경로에 폴더 좀 만들어줘"라고 시키기만 합니다.
             self.vfs_service
-                .create_folder_by_path(&path_str)
+                .create_folder_by_path(&path_str, user_id)
                 .await
                 .map_err(|e| {
                     tracing::error!("❌ 폴더 생성 실패: {}", e);
@@ -224,22 +264,48 @@ impl DavFileSystem for NasWebDavAdapter {
         })
     }
 
+    fn rename<'until_done>(
+        &'until_done self,
+        from: &'until_done DavPath,
+        to: &'until_done DavPath,
+        credentials: &'until_done WebDavCredentials,
+    ) -> BoxFuture<'until_done, FsResult<()>> {
+        Box::pin(async move {
+            let from_str = from.as_url_string();
+            let to_str = to.as_url_string();
+            let user_id = credentials.user_id;
+            tracing::info!("✏️ [WebDAV] Rename/MOVE: '{}' -> '{}'", from_str, to_str);
+
+            self.vfs_service
+                .rename_path(&from_str, &to_str, user_id)
+                .await
+                .map_err(|e| {
+                    tracing::error!("❌ Rename 실패: {}", e);
+                    if e.contains("찾을 수 없") {
+                        FsError::NotFound
+                    } else {
+                        FsError::GeneralFailure
+                    }
+                })
+        })
+    }
+
     // 🗑️ 1. 파일 삭제 (DELETE)
     fn remove_file<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<()>> {
         Box::pin(async move {
             let path_str = path.as_url_string();
+            let user_id = credentials.user_id;
             tracing::info!("🗑️ [WebDAV] 파일 삭제 요청: {}", path_str);
 
-            // 1. 경로를 통해 DB에서 파일 정보를 찾습니다.
-            match self.vfs_service.resolve_path(&path_str).await {
-                // 2. 파일이 맞다면 NasService의 삭제 로직을 호출합니다.
+            match self.vfs_service.resolve_path(&path_str, user_id).await {
                 Ok(Some(VfsNode::File(file_meta))) => {
                     self.vfs_service
                         .nas_service
-                        .delete_file(&file_meta.id)
+                        .delete_file(&file_meta.id, Some(user_id))
                         .await
                         .map_err(|e| {
                             tracing::error!("❌ 파일 삭제 실패: {:?}", e);
@@ -258,18 +324,18 @@ impl DavFileSystem for NasWebDavAdapter {
     fn remove_dir<'until_done>(
         &'until_done self,
         path: &'until_done DavPath,
+        credentials: &'until_done WebDavCredentials,
     ) -> BoxFuture<'until_done, FsResult<()>> {
         Box::pin(async move {
             let path_str = path.as_url_string();
+            let user_id = credentials.user_id;
             tracing::info!("🗑️ [WebDAV] 폴더 삭제 요청: {}", path_str);
 
-            // 1. 경로를 통해 DB에서 폴더 정보를 찾습니다.
-            match self.vfs_service.resolve_path(&path_str).await {
-                // 2. 폴더가 맞다면 NasService의 폴더 삭제 로직을 호출합니다.
+            match self.vfs_service.resolve_path(&path_str, user_id).await {
                 Ok(Some(VfsNode::Folder(folder_meta))) => {
                     self.vfs_service
                         .nas_service
-                        .delete_folder(&folder_meta.id)
+                        .delete_folder(&folder_meta.id, Some(user_id))
                         .await
                         .map_err(|e| {
                             tracing::error!("❌ 폴더 삭제 실패: {:?}", e);
@@ -292,53 +358,91 @@ impl DavFileSystem for NasWebDavAdapter {
 pub enum NasWebDavMetaData {
     Root,
     Node(VfsNode),
+    /// Crew WebDAV 마운트 루트(`/crew-uuid/`). dav-server는 path != "/" 일 때
+    /// `meta.len()`을 quota-used-bytes 로 쓰므로 디스크 사용량을 len 에 넣는다.
+    MountRoot { node: VfsNode, disk_used: u64 },
+}
+
+impl NasWebDavMetaData {
+    fn vfs_node(&self) -> Option<&VfsNode> {
+        match self {
+            Self::Node(n) | Self::MountRoot { node: n, .. } => Some(n),
+            Self::Root => None,
+        }
+    }
 }
 
 impl DavMetaData for NasWebDavMetaData {
     fn len(&self) -> u64 {
         match self {
             Self::Root => 0,
+            Self::MountRoot { disk_used, .. } => *disk_used,
             Self::Node(VfsNode::Folder(_)) => 0,
             Self::Node(VfsNode::File(f)) => f.size,
         }
     }
     fn is_dir(&self) -> bool {
-        match self {
-            Self::Root => true,
-            Self::Node(VfsNode::Folder(_)) => true,
-            Self::Node(VfsNode::File(_)) => false,
+        match self.vfs_node() {
+            None => true,
+            Some(VfsNode::Folder(_)) => true,
+            Some(VfsNode::File(_)) => false,
         }
     }
     fn modified(&self) -> FsResult<SystemTime> {
-        match self {
-            Self::Root => Ok(SystemTime::now()), // 루트는 현재 시간 혹은 서버 시작 시간
-            Self::Node(VfsNode::Folder(f)) => {
-                // 💡 DB에 저장된 rfc3339 문자열을 SystemTime으로 변환
-                DateTime::parse_from_rfc3339(&f.updated_at)
-                    .map(|dt| SystemTime::from(dt.with_timezone(&Utc)))
-                    .map_err(|_| FsError::GeneralFailure)
+        match self.vfs_node() {
+            None => Ok(SystemTime::now()),
+            Some(VfsNode::Folder(f)) => parse_rfc3339_time(&f.updated_at),
+            Some(VfsNode::File(f)) => parse_rfc3339_time(&f.updated_at),
+        }
+    }
+    fn created(&self) -> FsResult<SystemTime> {
+        match self.vfs_node() {
+            None => Ok(SystemTime::now()),
+            Some(VfsNode::Folder(f)) => {
+                parse_rfc3339_time(&f.created_at).or_else(|_| parse_rfc3339_time(&f.updated_at))
             }
-            Self::Node(VfsNode::File(f)) => {
-                // 💡 파일도 동일하게 변환
-                DateTime::parse_from_rfc3339(&f.updated_at)
-                    .map(|dt| SystemTime::from(dt.with_timezone(&Utc)))
-                    .map_err(|_| FsError::GeneralFailure)
+            Some(VfsNode::File(f)) => {
+                parse_rfc3339_time(&f.created_at).or_else(|_| parse_rfc3339_time(&f.updated_at))
             }
         }
     }
     // 💡 1. 이게 진짜 파일인지 윈도우에게 확신을 줍니다.
     fn is_file(&self) -> bool {
-        matches!(self, Self::Node(VfsNode::File(_)))
+        matches!(self.vfs_node(), Some(VfsNode::File(_)))
     }
     fn etag(&self) -> Option<String> {
-        match self {
-            Self::Node(VfsNode::File(f)) => {
-                // DB에 있는 checksum을 etag로 쓰면 완벽합니다!
+        match self.vfs_node() {
+            Some(VfsNode::File(f)) => {
                 f.checksum.clone().or_else(|| Some(f.id.clone()))
             }
-            _ => None,
+            Some(VfsNode::Folder(f)) => Some(format!("folder-{}", f.id)),
+            None => None,
         }
     }
+}
+
+/// `/crew-uuid/` 처럼 Crew ID만 있는 WebDAV 마운트 루트인지 확인한다.
+fn is_webdav_mount_root(path: &str) -> bool {
+    path.trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .count()
+        <= 1
+}
+
+fn parse_rfc3339_time(value: &str) -> FsResult<SystemTime> {
+    if value.is_empty() {
+        return Ok(SystemTime::now());
+    }
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| SystemTime::from(dt.with_timezone(&Utc)))
+        .or_else(|_| {
+            // SQLite datetime('now') 등 레거시 형식 대비
+            value
+                .parse::<DateTime<Utc>>()
+                .map(|dt| SystemTime::from(dt))
+        })
+        .map_err(|_| FsError::GeneralFailure)
 }
 
 // =================================================================
@@ -450,13 +554,11 @@ impl DavFile for NasWebDavFile {
     }
     fn flush(&mut self) -> BoxFuture<'_, FsResult<()>> {
         Box::pin(async move {
-            // 1. 물리 파일 버퍼 비우기
             self.file
                 .flush()
                 .await
                 .map_err(|_| FsError::GeneralFailure)?;
 
-            // 2. 실제 저장된 파일의 크기 확인
             let attr = self
                 .file
                 .metadata()
@@ -464,8 +566,24 @@ impl DavFile for NasWebDavFile {
                 .map_err(|_| FsError::GeneralFailure)?;
             let final_size = attr.len();
 
-            // 3. NasService 규격에 맞는 메타데이터 생성
             let now = chrono::Utc::now().to_rfc3339();
+            let created_at = self
+                .nas_service
+                .repository
+                .find_file_by_id(&self.meta.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.created_at)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if self.meta.created_at.is_empty() {
+                        now.clone()
+                    } else {
+                        self.meta.created_at.clone()
+                    }
+                });
+
             let final_meta = ObjectMetadata {
                 id: self.meta.id.clone(),
                 folder_id: self.meta.folder_id.clone(),
@@ -477,23 +595,22 @@ impl DavFile for NasWebDavFile {
                         .to_string(),
                 ),
                 is_deleted: false,
-                created_at: now.clone(),
+                created_at,
                 updated_at: now,
-                checksum: None, // 필요 시 파일 전체 읽어서 계산 가능하지만 우선 None
+                checksum: None,
                 version: 1,
             };
 
-            // 💡 4. NasService의 Repository를 사용하여 DB에 최종 저장!
-            // 이렇게 해야 웹 NAS 목록에 즉시 나타납니다.
             self.nas_service
                 .repository
-                .save_metadata(final_meta)
+                .save_metadata(final_meta.clone())
                 .await
                 .map_err(|e| {
                     tracing::error!("❌ DB 메타데이터 저장 실패: {:?}", e);
                     FsError::GeneralFailure
                 })?;
 
+            self.meta = final_meta;
             Ok(())
         })
     }

@@ -47,6 +47,9 @@ pub enum NasError {
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Database error: {0}")]
     Sqlx(#[from] sqlx::Error),
 

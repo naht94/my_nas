@@ -27,6 +27,7 @@ impl IntoResponse for AppError {
             // self.0으로 내부 NasError 접근
             NasError::DataNotFound => (StatusCode::NOT_FOUND, "요청한 리소스를 찾을 수 없습니다."),
             NasError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.as_str()),
+            NasError::Forbidden(m) => (StatusCode::FORBIDDEN, m.as_str()),
             NasError::Storage(StorageError::NotFound) | NasError::Repo(RepoError::NotFound) => {
                 (StatusCode::NOT_FOUND, "파일 또는 폴더가 존재하지 않습니다.")
             }

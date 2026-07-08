@@ -7,4 +7,9 @@ pub fn routes() -> Router<Arc<NasService>> {
     Router::new()
         .route("/api/files/{id}", delete(handlers::delete_file_handler))
         .route("/api/folders/{id}", delete(handlers::delete_folder_handler))
+        .route(
+            "/api/users/app-passwords/{id}",
+            delete(handlers::revoke_app_password_handler),
+        )
+        .route("/api/crews/{crew_id}", delete(handlers::delete_crew_handler))
 }

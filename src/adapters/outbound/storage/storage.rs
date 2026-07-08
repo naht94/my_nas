@@ -86,9 +86,6 @@ impl StoragePort for DiskStorage {
         }
     }
 
-    fn get_base_path(&self) -> String {
-        self.base_path.to_string_lossy().into_owned()
-    }
     fn get_physical_path(&self, id: &str) -> PathBuf {
         if id.len() >= 4 {
             let shard1 = &id[0..2];

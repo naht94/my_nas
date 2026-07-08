@@ -1,4 +1,5 @@
 /target
+.run/
 cert_env
 
 # Env

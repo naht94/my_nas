@@ -4,3 +4,4 @@ pub mod get;
 pub mod handlers;
 pub mod patch;
 pub mod post;
+pub mod user_context;
